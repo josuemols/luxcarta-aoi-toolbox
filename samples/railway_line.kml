@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2" xmlns:gx="http://www.google.com/kml/ext/2.2">
+    <Document id="15">
+        <Style id="18">
+            <LineStyle id="19">
+                <color>ff0000ff</color>
+                <colorMode>normal</colorMode>
+                <width>3</width>
+            </LineStyle>
+        </Style>
+        <name>Nice–Cannes railway</name>
+        <Placemark id="17">
+            <name>Nice–Cannes railway</name>
+            <styleUrl>#18</styleUrl>
+            <ExtendedData>
+                <Data name="name">
+                    <value>Nice–Cannes railway</value>
+                </Data>
+                <Data name="city">
+                    <value>Nice–Cannes railway</value>
+                </Data>
+            </ExtendedData>
+            <LineString>
+                <coordinates>7.262,43.705,0.0 7.212,43.688,0.0 7.155,43.66,0.0 7.125,43.615,0.0 7.075,43.58,0.0 7.017,43.552,0.0</coordinates>
+            </LineString>
+        </Placemark>
+    </Document>
+</kml>
