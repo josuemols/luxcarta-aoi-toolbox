@@ -14,13 +14,14 @@ polygons exist. The caller shows which method was used and lets the user switch.
 """
 import requests
 import shapely
-from shapely.geometry import shape, Polygon, Point
-from shapely.ops import unary_union
+from shapely.geometry import shape, Polygon, LineString, Point
+from shapely.ops import unary_union, polygonize
 
 from . import geo
 
 USER_AGENT = "LuxCarta-AOI-Toolbox/1.0 (sales tooling; josuemo@gmail.com)"
 NOMINATIM = "https://nominatim.openstreetmap.org/search"
+PHOTON = "https://photon.komoot.io/api"
 OVERPASS_ENDPOINTS = [
     "https://overpass-api.de/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
@@ -40,8 +41,26 @@ class UrbanLookupError(Exception):
 # ---------------------------------------------------------------- candidates
 
 def find_candidates(city, country=None, timeout=20):
-    """Nominatim search -> list of candidate dicts:
-    {label, lat, lon, admin_geom (shapely or None), country_code, osm_type}."""
+    """City search -> list of candidate dicts:
+    {label, lat, lon, admin_geom (shapely or None), country_code, kind,
+     osm_rel_id (when the boundary polygon must be fetched separately)}.
+    Nominatim first; Photon + Overpass fallback (Nominatim blocks many
+    cloud-host IPs, so the fallback is what usually runs in production)."""
+    try:
+        return _nominatim_candidates(city, country, timeout)
+    except UrbanLookupError as primary_error:
+        try:
+            return _photon_candidates(city, country, timeout)
+        except UrbanLookupError:
+            raise primary_error
+
+
+def _http_detail(e):
+    status = getattr(getattr(e, "response", None), "status_code", None)
+    return f"HTTP {status}" if status else e.__class__.__name__
+
+
+def _nominatim_candidates(city, country, timeout):
     q = f"{city}, {country}" if country else city
     try:
         r = requests.get(
@@ -52,7 +71,7 @@ def find_candidates(city, country=None, timeout=20):
         r.raise_for_status()
         rows = r.json()
     except requests.RequestException as e:
-        raise UrbanLookupError(f"City search service is unreachable right now ({e.__class__.__name__}). Try again in a minute.")
+        raise UrbanLookupError(f"City search service is unreachable right now ({_http_detail(e)}). Try again in a minute.")
     out = []
     for row in rows:
         cat = row.get("category") or row.get("class")  # jsonv2 says "category"
@@ -78,6 +97,63 @@ def find_candidates(city, country=None, timeout=20):
         raise UrbanLookupError(
             f'No city found for "{q}". Check the spelling, or add the country.')
     return out
+
+
+def _photon_candidates(city, country, timeout):
+    """Photon geocoder (keyless, no IP policy). Returns candidates whose
+    boundary polygon is fetched later from Overpass via osm_rel_id."""
+    q = f"{city}, {country}" if country else city
+    try:
+        r = requests.get(PHOTON, params={"q": q, "limit": 6},
+                         headers={"User-Agent": USER_AGENT}, timeout=timeout)
+        r.raise_for_status()
+        features = r.json().get("features", [])
+    except requests.RequestException as e:
+        raise UrbanLookupError(f"City search fallback also unreachable ({_http_detail(e)}).")
+    out = []
+    for f in features:
+        p = f.get("properties", {})
+        if p.get("osm_key") not in ("place", "boundary"):
+            continue
+        try:
+            lon, lat = f["geometry"]["coordinates"][:2]
+        except (KeyError, TypeError, ValueError):
+            continue
+        label = ", ".join(x for x in (p.get("name"), p.get("state"), p.get("country")) if x)
+        out.append({
+            "label": label or city,
+            "lat": float(lat), "lon": float(lon),
+            "admin_geom": None,
+            "osm_rel_id": p.get("osm_id") if p.get("osm_type") == "R" else None,
+            "country_code": (p.get("countrycode") or "").lower(),
+            "kind": f'{p.get("osm_key")}/{p.get("osm_value")}',
+        })
+    if not out:
+        raise UrbanLookupError(
+            f'No city found for "{q}". Check the spelling, or add the country.')
+    return out
+
+
+def relation_polygon(rel_id, timeout=120):
+    """Fetch an OSM admin-boundary relation from Overpass and assemble its
+    outer ways into a (Multi)Polygon. Returns None if it can't be built."""
+    data = _overpass(f"[out:json][timeout:90];relation({rel_id});out geom;", timeout)
+    lines = []
+    for el in data.get("elements", []):
+        if el.get("type") != "relation":
+            continue
+        for m in el.get("members", []):
+            if m.get("type") == "way" and m.get("role") in ("outer", "") and "geometry" in m:
+                pts = [(p["lon"], p["lat"]) for p in m["geometry"]]
+                if len(pts) >= 2:
+                    lines.append(LineString(pts))
+    if not lines:
+        return None
+    polys = list(polygonize(unary_union(lines)))
+    if not polys:
+        return None
+    geom = unary_union(polys)
+    return geom.buffer(0) if not geom.is_valid else geom
 
 
 # ---------------------------------------------------------------- built-up
@@ -137,6 +213,15 @@ def build_urban_area(candidate):
     lat, lon = candidate["lat"], candidate["lon"]
     admin = candidate.get("admin_geom")
     notes, methods = [], {}
+
+    if admin is None and candidate.get("osm_rel_id"):
+        try:
+            admin = relation_polygon(candidate["osm_rel_id"])
+        except UrbanLookupError as e:
+            admin = None
+            notes.append(f"Official boundary couldn't be fetched: {e}")
+        if admin is not None and admin.is_empty:
+            admin = None
 
     try:
         raw = builtup_polygons(lat, lon, admin)

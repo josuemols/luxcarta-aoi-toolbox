@@ -123,8 +123,21 @@ def _reverse_city(lat, lon):
         r = requests.get("https://nominatim.openstreetmap.org/reverse",
                          params={"lat": lat, "lon": lon, "format": "jsonv2", "zoom": 10},
                          headers={"User-Agent": urban.USER_AGENT}, timeout=15)
+        r.raise_for_status()
         a = r.json().get("address", {})
-        return a.get("city") or a.get("town") or a.get("village") or a.get("municipality")
+        name = a.get("city") or a.get("town") or a.get("village") or a.get("municipality")
+        if name:
+            return name
+    except Exception:
+        pass
+    try:  # Photon fallback — Nominatim blocks many cloud-host IPs
+        r = requests.get("https://photon.komoot.io/reverse",
+                         params={"lat": lat, "lon": lon},
+                         headers={"User-Agent": urban.USER_AGENT}, timeout=15)
+        r.raise_for_status()
+        feats = r.json().get("features", [])
+        p = feats[0]["properties"] if feats else {}
+        return p.get("city") or p.get("name")
     except Exception:
         return None
 
