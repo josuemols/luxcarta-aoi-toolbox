@@ -228,19 +228,26 @@ def tool_fixname():
             one = st.text_input("City name", value=feats[0]["name"], key="t2_all")
             new_names = [one] * len(feats)
     if not new_names:
+        # widget-state writes must happen in on_click callbacks (before the
+        # script body runs) — writing after the widget exists raises
+        def _apply_suggestion(state_key, lat, lon):
+            suggestion = _reverse_city(lat, lon)
+            if suggestion:
+                st.session_state[state_key] = suggestion
+            else:
+                st.session_state["t2_nosuggest"] = True
+
         for i, f in enumerate(feats):
             c1, c2 = st.columns([3, 1])
             val = c1.text_input(f"Name for shape {i + 1} (currently “{f['name']}”)",
                                 value=f["name"], key=f"t2_n{i}")
-            if c2.button("Suggest", key=f"t2_s{i}", help="Look up the city at this location"):
-                cen = f["geom"].centroid
-                suggestion = _reverse_city(round(cen.y, 5), round(cen.x, 5))
-                if suggestion:
-                    st.session_state[f"t2_n{i}"] = suggestion
-                    st.rerun()
-                else:
-                    st.toast("No suggestion found for this location.")
+            cen = f["geom"].centroid
+            c2.button("Suggest", key=f"t2_s{i}", help="Look up the city at this location",
+                      on_click=_apply_suggestion,
+                      args=(f"t2_n{i}", round(cen.y, 5), round(cen.x, 5)))
             new_names.append(val)
+        if st.session_state.pop("t2_nosuggest", False):
+            st.toast("No suggestion found for this location.")
 
     geoms = [f["geom"] for f in feats]
     preview_map(geoms, new_names)
